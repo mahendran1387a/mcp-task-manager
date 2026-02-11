@@ -1,13 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import io from 'socket.io-client';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LayoutGrid } from 'lucide-react';
+import { LayoutGrid, Sparkles } from 'lucide-react';
 import TaskCard from './components/TaskCard';
 import AddTask from './components/AddTask';
 import NotificationToast from './components/NotificationToast';
 import SystemArchitecture from './components/SystemArchitecture';
 import EventLog from './components/EventLog';
+import SystemOverview from './components/SystemOverview';
 
 const API_URL = 'http://localhost:3000/api';
 const socket = io('http://localhost:3000');
@@ -17,8 +18,9 @@ function App() {
   const [latestEvent, setLatestEvent] = useState(null);
   const [eventHistory, setEventHistory] = useState([]);
   const [filter, setFilter] = useState('all');
+  const [overview, setOverview] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
 
-  // Fetch tasks
   const fetchTasks = async (status = 'all') => {
     try {
       const res = await axios.get(`${API_URL}/tasks?status=${status}`);
@@ -30,18 +32,35 @@ function App() {
     }
   };
 
+  const fetchOverview = async () => {
+    try {
+      setOverviewLoading(true);
+      const res = await axios.get(`${API_URL}/overview`);
+      setOverview(res.data);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
   useEffect(() => {
-    fetchTasks();
+    fetchTasks(filter);
+    fetchOverview();
+
+    const interval = setInterval(fetchOverview, 8000);
 
     socket.on('task_event', (event) => {
-      console.log('Real-time update:', event);
       setLatestEvent(event);
-      // Keep last 50 events
-      setEventHistory(prev => [...prev, event].slice(-50));
+      setEventHistory((prev) => [...prev, event].slice(-50));
       fetchTasks(filter);
+      fetchOverview();
     });
 
-    return () => socket.off('task_event');
+    return () => {
+      clearInterval(interval);
+      socket.off('task_event');
+    };
   }, [filter]);
 
   const handleAdd = async ({ title, description }) => {
@@ -56,7 +75,6 @@ function App() {
     await axios.delete(`${API_URL}/tasks/${id}`);
   };
 
-  // Simulate a notification for demonstration
   const simulateNotification = () => {
     const fakeEvent = {
       eventType: 'TEST_NOTIFICATION',
@@ -64,30 +82,38 @@ function App() {
       task: { title: 'Test System Flow' }
     };
     setLatestEvent(fakeEvent);
-    setEventHistory(prev => [...prev, fakeEvent].slice(-50));
+    setEventHistory((prev) => [...prev, fakeEvent].slice(-50));
   };
 
   const filteredTasks = filter === 'all'
     ? tasks
-    : tasks.filter(t => t.status === filter);
+    : tasks.filter((task) => task.status === filter);
+
+  const filterPills = useMemo(
+    () => ['all', 'pending', 'in-progress', 'completed'],
+    []
+  );
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white selection:bg-purple-500/30 font-sans pb-20">
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-purple-900/20 via-[#0a0a0a] to-[#0a0a0a] pointer-events-none" />
+    <div className="min-h-screen bg-[#07090f] text-white selection:bg-fuchsia-500/30 font-sans pb-20">
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(168,85,247,0.2),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(56,189,248,0.14),transparent_42%)] pointer-events-none" />
 
       <NotificationToast event={latestEvent} />
 
       <div className="relative max-w-7xl mx-auto px-6 py-8">
-        <header className="flex justify-between items-center mb-8">
+        <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8 gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-3 bg-purple-600 rounded-xl shadow-lg shadow-purple-600/20">
+            <div className="p-3 bg-gradient-to-br from-violet-600 to-fuchsia-500 rounded-xl shadow-lg shadow-fuchsia-600/20">
               <LayoutGrid size={24} className="text-white" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">
-                MCP Task Manager
+              <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white via-fuchsia-100 to-cyan-200">
+                MCP Task Manager Command Center
               </h1>
-              <p className="text-gray-400 text-sm">Real-time • Event Driven</p>
+              <p className="text-gray-300 text-sm inline-flex items-center gap-2">
+                <Sparkles size={14} className="text-fuchsia-300" />
+                Real-time project visibility, queue health, and event-driven task control
+              </p>
             </div>
           </div>
 
@@ -99,20 +125,19 @@ function App() {
           </button>
         </header>
 
-        {/* Visual Flow Section */}
+        <SystemOverview overview={overview} loading={overviewLoading} />
         <SystemArchitecture activeEvent={latestEvent} />
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-          {/* Main Task Area */}
           <div className="lg:col-span-3">
-            <div className="flex gap-2 bg-white/5 p-1 rounded-lg border border-white/10 mb-6 w-fit">
-              {['all', 'pending', 'in-progress', 'completed'].map((f) => (
+            <div className="flex gap-2 bg-white/5 p-1 rounded-xl border border-white/10 mb-6 w-fit shadow-inner shadow-white/5">
+              {filterPills.map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${filter === f
-                      ? 'bg-purple-600 text-white shadow-lg'
-                      : 'text-gray-400 hover:text-white hover:bg-white/5'
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${filter === f
+                    ? 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-lg shadow-fuchsia-900/30'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5'
                     }`}
                 >
                   {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -120,11 +145,8 @@ function App() {
               ))}
             </div>
 
-            <motion.div
-              layout
-              className="grid grid-cols-1 md:grid-cols-2 gap-4"
-            >
-              <AnimatePresence mode='popLayout'>
+            <motion.div layout className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <AnimatePresence mode="popLayout">
                 {filteredTasks.length > 0 ? (
                   filteredTasks.map((task) => (
                     <TaskCard
@@ -150,7 +172,6 @@ function App() {
             </motion.div>
           </div>
 
-          {/* Sidebar Event Log */}
           <div className="lg:col-span-1">
             <EventLog events={eventHistory} />
           </div>
