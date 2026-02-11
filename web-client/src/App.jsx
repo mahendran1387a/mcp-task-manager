@@ -111,6 +111,22 @@ function App() {
       clearInterval(interval);
       socket.off('notification_event');
       socket.off('queue_pending_updated');
+  useEffect(() => {
+    fetchTasks(filter);
+    fetchOverview();
+
+    const interval = setInterval(fetchOverview, 8000);
+
+    socket.on('task_event', (event) => {
+      setLatestEvent(event);
+      setEventHistory((prev) => [...prev, event].slice(-50));
+      fetchTasks(filter);
+      fetchOverview();
+    });
+
+    return () => {
+      clearInterval(interval);
+      socket.off('task_event');
     };
   }, [filter]);
 
@@ -172,6 +188,14 @@ function App() {
     addLogEvent('QUEUE_REQUEUE', `Requeued deliveryTag=${deliveryTag}`);
     fetchQueuePending();
     fetchOverview();
+  const simulateNotification = () => {
+    const fakeEvent = {
+      eventType: 'TEST_NOTIFICATION',
+      timestamp: Date.now(),
+      task: { title: 'Test System Flow' }
+    };
+    setLatestEvent(fakeEvent);
+    setEventHistory((prev) => [...prev, fakeEvent].slice(-50));
   };
 
   const filteredTasks = filter === 'all'
@@ -179,6 +203,10 @@ function App() {
     : tasks.filter((task) => task.status === filter);
 
   const filterPills = useMemo(() => ['all', 'pending', 'in-progress', 'completed'], []);
+  const filterPills = useMemo(
+    () => ['all', 'pending', 'in-progress', 'completed'],
+    []
+  );
 
   return (
     <div className="min-h-screen bg-[#07090f] text-white selection:bg-fuchsia-500/30 font-sans pb-20">
@@ -188,6 +216,8 @@ function App() {
 
       <div className="relative max-w-7xl mx-auto px-6 py-8 space-y-8">
         <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div className="relative max-w-7xl mx-auto px-6 py-8">
+        <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8 gap-4">
           <div className="flex items-center gap-3">
             <div className="p-3 bg-gradient-to-br from-violet-600 to-fuchsia-500 rounded-xl shadow-lg shadow-fuchsia-600/20">
               <LayoutGrid size={24} className="text-white" />
@@ -199,6 +229,11 @@ function App() {
               <p className="text-gray-300 text-sm inline-flex items-center gap-2">
                 <Sparkles size={14} className="text-fuchsia-300" />
                 Discover tools → invoke calls → review queue → approve notifications → consume updates
+                MCP Task Manager Command Center
+              </h1>
+              <p className="text-gray-300 text-sm inline-flex items-center gap-2">
+                <Sparkles size={14} className="text-fuchsia-300" />
+                Real-time project visibility, queue health, and event-driven task control
               </p>
             </div>
           </div>
