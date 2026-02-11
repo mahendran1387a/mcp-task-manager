@@ -9,6 +9,8 @@ import NotificationToast from './components/NotificationToast';
 import SystemArchitecture from './components/SystemArchitecture';
 import EventLog from './components/EventLog';
 import SystemOverview from './components/SystemOverview';
+import ToolDiscoveryPanel from './components/ToolDiscoveryPanel';
+import QueueWorkbench from './components/QueueWorkbench';
 
 const API_URL = 'http://localhost:3000/api';
 const socket = io('http://localhost:3000');
@@ -20,6 +22,20 @@ function App() {
   const [filter, setFilter] = useState('all');
   const [overview, setOverview] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
+  const [tools, setTools] = useState([]);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [invokeResult, setInvokeResult] = useState('');
+  const [pendingQueue, setPendingQueue] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+
+  const addLogEvent = (label, detail) => {
+    const event = {
+      eventType: label,
+      timestamp: Date.now(),
+      task: { title: detail }
+    };
+    setEventHistory((prev) => [...prev, event].slice(-80));
+  };
 
   const fetchTasks = async (status = 'all') => {
     try {
@@ -44,6 +60,57 @@ function App() {
     }
   };
 
+  const fetchTools = async () => {
+    try {
+      setToolsLoading(true);
+      const res = await axios.get(`${API_URL}/mcp/tools`);
+      setTools(res.data);
+      addLogEvent('MCP_DISCOVERY', `Discovered ${res.data.length} tools`);
+    } catch (error) {
+      addLogEvent('MCP_DISCOVERY_FAILED', error.message);
+    } finally {
+      setToolsLoading(false);
+    }
+  };
+
+  const fetchQueuePending = async () => {
+    const res = await axios.get(`${API_URL}/queue/pending`);
+    setPendingQueue(res.data.pending || []);
+  };
+
+  const fetchNotifications = async () => {
+    const res = await axios.get(`${API_URL}/notifications`);
+    setNotifications(res.data.notifications || []);
+  };
+
+  useEffect(() => {
+    fetchTasks(filter);
+    fetchOverview();
+    fetchTools();
+    fetchQueuePending();
+    fetchNotifications();
+
+    const interval = setInterval(() => {
+      fetchOverview();
+      fetchQueuePending();
+      fetchNotifications();
+    }, 7000);
+
+    socket.on('notification_event', (event) => {
+      setLatestEvent(event);
+      addLogEvent('NOTIFICATION_CONSUMED', `${event.eventType} • ${event.task?.title}`);
+      fetchOverview();
+      fetchNotifications();
+    });
+
+    socket.on('queue_pending_updated', (pending) => {
+      setPendingQueue(pending);
+    });
+
+    return () => {
+      clearInterval(interval);
+      socket.off('notification_event');
+      socket.off('queue_pending_updated');
   useEffect(() => {
     fetchTasks(filter);
     fetchOverview();
@@ -65,16 +132,62 @@ function App() {
 
   const handleAdd = async ({ title, description }) => {
     await axios.post(`${API_URL}/tasks`, { title, description });
+    addLogEvent('TOOL_CALL', `add_task(${title})`);
+    fetchTasks(filter);
+    fetchOverview();
   };
 
   const handleUpdate = async (id, status) => {
     await axios.patch(`${API_URL}/tasks/${id}`, { status });
+    addLogEvent('TOOL_CALL', `update_task(id=${id}, status=${status})`);
+    fetchTasks(filter);
+    fetchOverview();
   };
 
   const handleDelete = async (id) => {
     await axios.delete(`${API_URL}/tasks/${id}`);
+    addLogEvent('TOOL_CALL', `delete_task(id=${id})`);
+    fetchTasks(filter);
+    fetchOverview();
   };
 
+  const handleInvokeTool = async (name, args, parseError) => {
+    if (parseError) {
+      setInvokeResult(parseError);
+      return;
+    }
+
+    const res = await axios.post(`${API_URL}/mcp/call`, { name, arguments: args });
+    setInvokeResult(res.data.summary || 'Tool call completed.');
+    addLogEvent('TOOL_CALL', `${name}(${JSON.stringify(args)})`);
+    fetchTasks(filter);
+    fetchOverview();
+  };
+
+  const handlePullQueue = async (count) => {
+    const res = await axios.post(`${API_URL}/queue/pull`, { count });
+    setPendingQueue((prev) => {
+      const map = new Map(prev.map((item) => [item.deliveryTag, item]));
+      (res.data.pulled || []).forEach((item) => map.set(item.deliveryTag, item));
+      return Array.from(map.values());
+    });
+    addLogEvent('QUEUE_PULL', `Pulled ${res.data.pulled?.length || 0} events for review`);
+    fetchOverview();
+  };
+
+  const handleApproveQueue = async (deliveryTag) => {
+    await axios.post(`${API_URL}/queue/${deliveryTag}/approve`);
+    addLogEvent('QUEUE_APPROVE', `Approved deliveryTag=${deliveryTag}`);
+    fetchQueuePending();
+    fetchNotifications();
+    fetchOverview();
+  };
+
+  const handleRequeue = async (deliveryTag) => {
+    await axios.post(`${API_URL}/queue/${deliveryTag}/requeue`);
+    addLogEvent('QUEUE_REQUEUE', `Requeued deliveryTag=${deliveryTag}`);
+    fetchQueuePending();
+    fetchOverview();
   const simulateNotification = () => {
     const fakeEvent = {
       eventType: 'TEST_NOTIFICATION',
@@ -89,6 +202,7 @@ function App() {
     ? tasks
     : tasks.filter((task) => task.status === filter);
 
+  const filterPills = useMemo(() => ['all', 'pending', 'in-progress', 'completed'], []);
   const filterPills = useMemo(
     () => ['all', 'pending', 'in-progress', 'completed'],
     []
@@ -100,6 +214,8 @@ function App() {
 
       <NotificationToast event={latestEvent} />
 
+      <div className="relative max-w-7xl mx-auto px-6 py-8 space-y-8">
+        <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
       <div className="relative max-w-7xl mx-auto px-6 py-8">
         <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-8 gap-4">
           <div className="flex items-center gap-3">
@@ -108,6 +224,11 @@ function App() {
             </div>
             <div>
               <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white via-fuchsia-100 to-cyan-200">
+                MCP Learning Studio
+              </h1>
+              <p className="text-gray-300 text-sm inline-flex items-center gap-2">
+                <Sparkles size={14} className="text-fuchsia-300" />
+                Discover tools → invoke calls → review queue → approve notifications → consume updates
                 MCP Task Manager Command Center
               </h1>
               <p className="text-gray-300 text-sm inline-flex items-center gap-2">
@@ -116,17 +237,18 @@ function App() {
               </p>
             </div>
           </div>
-
-          <button
-            onClick={simulateNotification}
-            className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm text-gray-300 transition-colors"
-          >
-            Simulate Flow
-          </button>
         </header>
 
         <SystemOverview overview={overview} loading={overviewLoading} />
         <SystemArchitecture activeEvent={latestEvent} />
+        <ToolDiscoveryPanel tools={tools} onInvoke={handleInvokeTool} invokeResult={invokeResult} loading={toolsLoading} />
+        <QueueWorkbench
+          pending={pendingQueue}
+          notifications={notifications}
+          onPull={handlePullQueue}
+          onApprove={handleApproveQueue}
+          onRequeue={handleRequeue}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           <div className="lg:col-span-3">
