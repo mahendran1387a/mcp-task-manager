@@ -1,0 +1,13 @@
+{
+  "name": "mcp-root",
+  "version": "1.0.0",
+  "description": "Root for MCP Task Manager",
+  "main": "watcher.js",
+  "type": "module",
+  "scripts": {
+    "watch": "node watcher.js"
+  },
+  "dependencies": {
+    "simple-git": "^3.22.0"
+  }
+}
