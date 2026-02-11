@@ -25,6 +25,22 @@ app.use(express.json());
 
 // MCP Client Setup
 let mcpClient;
+let rabbitConnection;
+let rabbitChannel;
+
+const serviceState = {
+    backend: { status: 'online', details: 'API and Socket.IO are running' },
+    mcp: { status: 'connecting', details: 'Connecting to MCP server...' },
+    rabbitmq: { status: 'connecting', details: 'Connecting to RabbitMQ...' },
+    queue: {
+        name: 'task_events',
+        status: 'unknown',
+        messageCount: 0,
+        consumerCount: 0,
+        details: 'Queue status unavailable'
+    }
+};
+
 async function connectToMcpServer() {
     const serverPath = path.join(__dirname, '..', '..', 'server', 'index.js');
     console.log('Connecting to MCP Server at:', serverPath);
@@ -40,6 +56,7 @@ async function connectToMcpServer() {
     );
 
     await mcpClient.connect(transport);
+    serviceState.mcp = { status: 'online', details: 'Connected via stdio transport' };
     console.log('✓ Connected to MCP Task Server (stdio)');
 }
 
@@ -47,32 +64,107 @@ async function connectToMcpServer() {
 const QUEUE_NAME = 'task_events';
 async function connectRabbitMQ() {
     try {
-        const connection = await amqp.connect('amqp://localhost');
-        const channel = await connection.createChannel();
-        await channel.assertQueue(QUEUE_NAME, { durable: true });
+        rabbitConnection = await amqp.connect('amqp://localhost');
+        rabbitChannel = await rabbitConnection.createChannel();
+        await rabbitChannel.assertQueue(QUEUE_NAME, { durable: true });
+
+        serviceState.rabbitmq = { status: 'online', details: 'Broker connection established' };
+        const queueInfo = await rabbitChannel.checkQueue(QUEUE_NAME);
+        serviceState.queue = {
+            name: QUEUE_NAME,
+            status: 'online',
+            messageCount: queueInfo.messageCount,
+            consumerCount: queueInfo.consumerCount,
+            details: 'Queue is healthy'
+        };
+
+        rabbitConnection.on('error', (err) => {
+            serviceState.rabbitmq = { status: 'offline', details: `Connection error: ${err.message}` };
+        });
+
+        rabbitConnection.on('close', () => {
+            serviceState.rabbitmq = { status: 'offline', details: 'Connection closed. Retrying...' };
+            serviceState.queue = {
+                ...serviceState.queue,
+                status: 'offline',
+                details: 'Queue unavailable while RabbitMQ is disconnected'
+            };
+            setTimeout(connectRabbitMQ, 5000);
+        });
 
         console.log('✓ Connected to RabbitMQ');
 
-        channel.consume(QUEUE_NAME, (msg) => {
+        rabbitChannel.consume(QUEUE_NAME, (msg) => {
             if (msg !== null) {
                 const content = JSON.parse(msg.content.toString());
                 console.log('Event received:', content.eventType);
                 // Broadcast to frontend
                 io.emit('task_event', content);
-                channel.ack(msg);
+                rabbitChannel.ack(msg);
             }
         });
     } catch (error) {
+        serviceState.rabbitmq = { status: 'offline', details: error.message };
+        serviceState.queue = {
+            ...serviceState.queue,
+            status: 'offline',
+            details: 'Queue unavailable because RabbitMQ is offline'
+        };
         console.error('RabbitMQ connection error:', error.message);
         setTimeout(connectRabbitMQ, 5000);
     }
+}
+
+async function buildOverviewStats() {
+    const tasksFile = path.join(__dirname, '..', '..', 'server', 'tasks.json');
+    const fs = await import('fs/promises');
+
+    let tasks = [];
+    try {
+        const data = await fs.readFile(tasksFile, 'utf-8');
+        tasks = JSON.parse(data);
+    } catch {
+        tasks = [];
+    }
+
+    const taskSummary = {
+        total: tasks.length,
+        pending: tasks.filter((task) => task.status === 'pending').length,
+        inProgress: tasks.filter((task) => task.status === 'in-progress').length,
+        completed: tasks.filter((task) => task.status === 'completed').length
+    };
+
+    if (rabbitChannel) {
+        try {
+            const queueInfo = await rabbitChannel.checkQueue(QUEUE_NAME);
+            serviceState.queue = {
+                name: QUEUE_NAME,
+                status: 'online',
+                messageCount: queueInfo.messageCount,
+                consumerCount: queueInfo.consumerCount,
+                details: 'Queue metrics fetched in real-time'
+            };
+        } catch (error) {
+            serviceState.queue = {
+                ...serviceState.queue,
+                status: 'degraded',
+                details: `Unable to inspect queue: ${error.message}`
+            };
+        }
+    }
+
+    return {
+        generatedAt: Date.now(),
+        services: serviceState,
+        tasks: taskSummary
+    };
 }
 
 // API Routes
 app.get('/api/tasks', async (req, res) => {
     try {
         const status = req.query.status || 'all';
-        const result = await mcpClient.callTool({
+        await mcpClient.callTool({
             name: 'list_tasks',
             arguments: { status }
         });
@@ -108,13 +200,26 @@ app.get('/api/tasks', async (req, res) => {
         const fs = await import('fs/promises');
         try {
             const data = await fs.readFile(tasksFile, 'utf-8');
-            res.json(JSON.parse(data));
-        } catch (e) {
+            const tasks = JSON.parse(data);
+            const filteredTasks = status === 'all'
+                ? tasks
+                : tasks.filter((task) => task.status === status);
+            res.json(filteredTasks);
+        } catch {
             res.json([]);
         }
 
     } catch (error) {
         console.error('Error fetching tasks:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/overview', async (req, res) => {
+    try {
+        const overview = await buildOverviewStats();
+        res.json(overview);
+    } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
@@ -162,6 +267,11 @@ app.delete('/api/tasks/:id', async (req, res) => {
 const PORT = 3000;
 httpServer.listen(PORT, async () => {
     console.log(`Backend running on http://localhost:${PORT}`);
-    await connectToMcpServer();
+    try {
+        await connectToMcpServer();
+    } catch (error) {
+        serviceState.mcp = { status: 'offline', details: error.message };
+        console.error('MCP connection error:', error.message);
+    }
     await connectRabbitMQ();
 });
