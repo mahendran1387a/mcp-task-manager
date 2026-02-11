@@ -1,0 +1,14 @@
+{
+    "name": "mcp-notification-server",
+    "version": "1.0.0",
+    "description": "Desktop notification server for MCP task manager",
+    "type": "module",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "amqplib": "^0.10.3",
+        "node-notifier": "^10.0.1"
+    }
+}

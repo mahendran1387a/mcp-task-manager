@@ -1,0 +1,14 @@
+{
+  "name": "mcp-task-server",
+  "version": "1.0.0",
+  "description": "MCP server for task management",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "amqplib": "^0.10.9"
+  }
+}
